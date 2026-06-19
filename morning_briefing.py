@@ -227,7 +227,7 @@ def generate_analysis(title, desc, market_data):
     if any(w in text for w in ["china", "chinese", "beijing", "shanghai", "hong kong", "asia"]):
         a.append("Asia-Pacific: Policy stimulus and regulatory direction are key swing factors. Capital flows sensitive to macro data surprises.")
     if any(w in text for w in ["dollar", "currency", "forex", "yen", "euro", "exchange rate"]):
-        a.append("FX: Dollar direction is centre of gravity for macro trades. Rate differentials and risk appetite drive near-term positioning.")
+        a.append("外汇: Dollar direction is centre of gravity for macro trades. Rate differentials and risk appetite drive near-term positioning.")
     if any(w in text for w in ["merger", "acquisition", "takeover", "deal", "ipo"]):
         a.append("Deal flow: Corporate activity signals management confidence. Premiums and financing conditions shape risk-reward for arbitrage.")
     if any(w in text for w in ["earnings", "revenue", "profit", "quarterly", "results", "guidance", "eps"]):
@@ -327,7 +327,7 @@ def build_html_briefing(market_data, news_items, date_str):
                 <a href="{htmlmod.escape(item['link'])}" class="news-title" target="_blank">{htmlmod.escape(item['title'])}</a>
                 <div class="news-desc">{htmlmod.escape(sd)}</div>
                 <div class="analysis-box">
-                    <div class="analysis-label">Analyst Commentary</div>
+                    <div class="analysis-label">分析师点评</div>
                     <div class="analysis-text">{htmlmod.escape(item['analysis'])}</div>
                     <div class="score-bar">
                         <span class="score-dot {score_class(item['score'])}"></span>
@@ -507,41 +507,41 @@ tr:hover td {{
 <div class="header">
     <div class="header-top">
         <div>
-            <div class="brand">MORNING BRIEFING</div>
-            <div class="brand-sub">Daily Financial Intelligence</div>
+            <div class="brand">晨间简报</div>
+            <div class="brand-sub">全球金融情报</div>
         </div>
         <div class="date-badge">
-            <div class="edition">Daily Edition</div>
+            <div class="edition">每日版</div>
             <div>{date_str}</div>
         </div>
     </div>
 </div>
 
 <!-- Market Overview -->
-<div class="section-title">Market Snapshot <span class="count">| Indices</span></div>
+<div class="section-title">市场速览 <span class="count">| 股指</span></div>
 <table>
     <thead>
-        <tr><th>Instrument</th><th>Last</th><th>Change</th><th>Change %</th></tr>
+        <tr><th>品种</th><th>最新价</th><th>涨跌额</th><th>涨跌额 %</th></tr>
     </thead>
     <tbody>
         {indices_rows}
     </tbody>
 </table>
 
-<div class="section-title">Currencies</div>
+<div class="section-title">外汇</div>
 <table>
     <thead>
-        <tr><th>Pair</th><th>Last</th><th>Change</th><th>Change %</th></tr>
+        <tr><th>货币对</th><th>最新价</th><th>涨跌额</th><th>涨跌额 %</th></tr>
     </thead>
     <tbody>
         {currencies_rows}
     </tbody>
 </table>
 
-<div class="section-title">Commodities & Crypto</div>
+<div class="section-title">商品与加密货币</div>
 <table>
     <thead>
-        <tr><th>Asset</th><th>Last</th><th>Change</th><th>Change %</th></tr>
+        <tr><th>资产</th><th>最新价</th><th>涨跌额</th><th>涨跌额 %</th></tr>
     </thead>
     <tbody>
         {commodities_rows}
@@ -549,7 +549,7 @@ tr:hover td {{
 </table>
 
 <!-- Top 10 -->
-<div class="section-title">Top 10 Financial News <span class="count">| Market Intelligence</span></div>
+<div class="section-title">十大金融新闻 <span class="count">| 市场情报</span></div>
 <table class="news-table">
     <tbody>
         {news_rows}
@@ -560,8 +560,8 @@ tr:hover td {{
 <div class="footer">
     Morning Briefing &middot; Generated on {date_str}<br>
     <div class="disclaimer">
-        Data from public financial APIs. Analysis is AI-generated and for informational purposes only.<br>
-        This briefing is an automated compilation and does not constitute investment advice.
+        数据来源于公开金融API，分析由AI生成，仅供参考。<br>
+        此为自动生成的简报，不构成投资建议。
     </div>
 </div>
 
@@ -574,17 +574,17 @@ def build_text_briefing(market_data, news_items, date_str):
     """Build a plain-text version for email fallback."""
     lines = []
     lines.append('=' * 66)
-    lines.append('  MORNING BRIEFING — Daily Financial Intelligence')
+    lines.append('  晨间简报 — 全球金融情报')
     lines.append(f'  {date_str}')
     lines.append('=' * 66)
     lines.append('')
 
-    for category, label in [('indices', 'MARKET OVERVIEW — Indices'),
+    for category, label in [('indices', 'MARKET OVERVIEW — 股指'),
                              ('currencies', 'CURRENCIES'),
                              ('commodities', 'COMMODITIES & CRYPTO')]:
         if category in market_data and market_data[category]:
             lines.append(f'── {label} ──')
-            lines.append(f'{"Instrument":<24} {"Last":>12} {"Change":>10} {"Chg%":>8}')
+            lines.append(f'{"品种":<24} {"最新价":>12} {"涨跌额":>10} {"Chg%":>8}')
             lines.append('-' * 54)
             for name, info in market_data[category].items():
                 if info:
@@ -621,7 +621,7 @@ def send_email(config, html_content, text_content):
         return False
     recipients = email_cfg.get('recipient_emails', [email_cfg.get('recipient_email', '')])
     msg = MIMEMultipart('alternative')
-    msg['Subject'] = f"Morning Briefing - {datetime.date.today().strftime('%A, %B %d, %Y')}"
+    msg['Subject'] = f"晨间简报 - {datetime.date.today().strftime('%A, %B %d, %Y')}"
     msg['From'] = email_cfg['sender_email']
     msg['To'] = ', '.join(recipients)
     msg['X-Priority'] = '1'
