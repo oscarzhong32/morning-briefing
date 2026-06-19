@@ -621,7 +621,7 @@ def send_email(config, html_content, text_content):
         return False
     recipients = email_cfg.get('recipient_emails', [email_cfg.get('recipient_email', '')])
     msg = MIMEMultipart('alternative')
-    msg['Subject'] = f'Morning Briefing - {datetime.date.today().strftime('%A, %B %d, %Y')}'
+    msg['Subject'] = f"Morning Briefing - {datetime.date.today().strftime('%A, %B %d, %Y')}"
     msg['From'] = email_cfg['sender_email']
     msg['To'] = ', '.join(recipients)
     msg['X-Priority'] = '1'
