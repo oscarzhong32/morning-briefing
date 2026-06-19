@@ -2,28 +2,21 @@
 
 on:
   schedule:
-    # 07:00 HKT = 23:00 UTC (previous day, since HKT = UTC+8)
     - cron: '0 23 * * 0-4'
-  workflow_dispatch:  # Allow manual trigger for testing
+  workflow_dispatch:
 
 jobs:
   generate-and-send:
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-    
     - name: Run Morning Briefing
       env:
         BRIEFING_EMAIL_PASSWORD: ${{ secrets.BRIEFING_EMAIL_PASSWORD }}
-      run: python morning_briefing.py
-    
+      run: python3 morning_briefing.py
     - name: Upload briefing HTML
       uses: actions/upload-artifact@v4
       if: always()
