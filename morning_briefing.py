@@ -673,7 +673,8 @@ def main():
     print(f'  Saved: {html_path}', file=sys.stderr)
 
     # Send email
-    if config['email']['sender_password']:
+    pw = __import__('os').environ.get('BRIEFING_EMAIL_PASSWORD') or config['email'].get('sender_password', '')
+    if pw:
         print('Sending email...', file=sys.stderr)
         send_email(config, html_content, text_content)
     else:
