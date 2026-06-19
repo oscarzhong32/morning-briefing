@@ -13,10 +13,16 @@ jobs:
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-    - name: Debug info
+    - name: Check secret is configured
+      env:
+        BRIEFING_EMAIL_PASSWORD: ${{ secrets.BRIEFING_EMAIL_PASSWORD }}
       run: |
-        python3 --version
-        python3 -c "import smtplib, ssl, json, datetime, html, re, time, urllib.request, xml.etree.ElementTree; print('All imports OK')"
+        if [ -z "$BRIEFING_EMAIL_PASSWORD" ]; then
+          echo "::error::BRIEFING_EMAIL_PASSWORD secret is NOT set!"
+          exit 1
+        else
+          echo "Secret is configured (${#BRIEFING_EMAIL_PASSWORD} chars)"
+        fi
     - name: Run Morning Briefing
       env:
         BRIEFING_EMAIL_PASSWORD: ${{ secrets.BRIEFING_EMAIL_PASSWORD }}
