@@ -419,6 +419,73 @@ class MorningBriefingStructureTests(unittest.TestCase):
         self.assertIn('bgcolor="#0a0a0a"', html)
         self.assertIn('style="background-color:#0a0a0a;', html)
 
+    def test_rendered_news_items_show_source_dates(self):
+        news = [
+            {
+                "title": "Fed holds rates as dot plot turns hawkish",
+                "description": "Treasury yields rose after the Federal Reserve signaled caution.",
+                "link": "https://example.com/fed",
+                "pub_date": "Sat, 20 Jun 2026 08:30:00 GMT",
+                "analysis": "Policy watch.",
+                "score": 88,
+            },
+        ]
+        structured = mb.build_structured_briefing(
+            self.sample_market_data(),
+            news,
+            ai_client=None,
+        )
+
+        html = mb.render_bank_sections(structured)
+        text = mb.build_text_briefing(
+            self.sample_market_data(),
+            news,
+            "Sunday, June 21, 2026",
+            structured_briefing=structured,
+        )
+
+        self.assertIn("20 Jun 2026", html)
+        self.assertIn("20 Jun 2026", text)
+
+    def test_ai_classified_items_are_enriched_with_original_news_dates(self):
+        def ai_client(_market_data, _news_items):
+            return {
+                "global_macro": [
+                    {
+                        "title": "Fed holds rates as dot plot turns hawkish",
+                        "summary": "Rates unchanged.",
+                        "impact": "Yields move.",
+                        "link": "https://example.com/fed",
+                        "importance": 90,
+                    }
+                ],
+                "mainland_hk_macao": [],
+                "middle_east_macro": [],
+                "liquidity_assets": [],
+                "senior_insight": "Insight",
+                "entity_watch": [],
+                "sources": [],
+            }
+
+        news = [
+            {
+                "title": "Fed holds rates as dot plot turns hawkish",
+                "description": "Treasury yields rose after the Federal Reserve signaled caution.",
+                "link": "https://example.com/fed",
+                "pub_date": "2026-06-20T08:30:00Z",
+                "analysis": "Policy watch.",
+                "score": 88,
+            },
+        ]
+
+        structured = mb.build_structured_briefing(
+            self.sample_market_data(),
+            news,
+            ai_client=ai_client,
+        )
+
+        self.assertEqual(structured["global_macro"][0]["pub_date"], "20 Jun 2026")
+
     def test_recipients_env_secret_overrides_config_and_splits_lists(self):
         old_value = mb.os.environ.get("BRIEFING_RECIPIENT_EMAILS")
         mb.os.environ["BRIEFING_RECIPIENT_EMAILS"] = "one@example.com, two@example.com;three@example.com"

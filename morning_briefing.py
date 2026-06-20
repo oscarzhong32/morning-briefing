@@ -98,6 +98,12 @@ def recent_from_date(config, now=None):
     start = current.astimezone(datetime.timezone.utc) - datetime.timedelta(days=get_recent_news_days(config))
     return start.date().isoformat()
 
+def format_news_date(pub_date):
+    parsed = parse_news_datetime(pub_date)
+    if not parsed:
+        return ''
+    return f'{parsed.day} {parsed.strftime("%b %Y")}'
+
 def fetch_rss(url, timeout=15):
     """Fetch and parse an RSS feed, returning list of (title, link, description, pub_date)."""
     items = []
@@ -516,6 +522,7 @@ def item_summary(item):
         'summary': desc,
         'impact': truncate_text(impact, 140),
         'link': item.get('link', ''),
+        'pub_date': format_news_date(item.get('pub_date') or item.get('publishedAt') or item.get('date')),
         'score': item.get('score', 0),
         'importance': int(item.get('importance', item.get('score', 0)) or 0),
     }
@@ -582,11 +589,13 @@ def default_entity_watch(news_items):
 def normalize_news_entry(item):
     if not isinstance(item, dict):
         return item_summary({'title': str(item), 'description': '', 'analysis': '', 'link': '', 'score': 0})
+    raw_date = item.get('pub_date') or item.get('publishedAt') or item.get('date')
     normalized = {
         'title': truncate_text(item.get('title') or item.get('headline') or '', 90),
         'summary': truncate_text(item.get('summary') or item.get('description') or '', 110),
         'impact': truncate_text(item.get('impact') or item.get('analysis') or '', 150),
         'link': item.get('link') or '',
+        'pub_date': format_news_date(raw_date) or str(raw_date or '').strip(),
         'score': item.get('score', 0),
     }
     if not normalized['summary']:
@@ -622,9 +631,13 @@ def normalize_structured_briefing(data, market_data, news_items):
     structured = {key: data.get(key, []) if isinstance(data, dict) else [] for key in BANK_SECTION_ORDER}
     fallback_by_section = {key: [] for key in NEWS_SECTION_KEYS}
     seen_links = {key: set() for key in NEWS_SECTION_KEYS}
+    source_summaries = {}
 
     for item in news_items:
         summary = item_summary(item)
+        for marker in (summary.get('link'), summary.get('title')):
+            if marker:
+                source_summaries[marker] = summary
         fallback_by_section[classify_news_item(item)].append(summary)
 
     for key in NEWS_SECTION_KEYS:
@@ -632,6 +645,10 @@ def normalize_structured_briefing(data, market_data, news_items):
         if not isinstance(existing, list):
             existing = []
         normalized = [normalize_news_entry(item) for item in existing]
+        for item in normalized:
+            source = source_summaries.get(item.get('link')) or source_summaries.get(item.get('title'))
+            if source and not item.get('pub_date'):
+                item['pub_date'] = source.get('pub_date', '')
         normalized = [
             item for item in normalized
             if item.get('title') and news_belongs_to_section(item, key)
@@ -726,6 +743,7 @@ def agnes_structured_briefing(market_data, news_items):
             'description': truncate_text(item.get('description', ''), 220),
             'analysis': truncate_text(item.get('analysis', ''), 180),
             'link': item.get('link', ''),
+            'pub_date': format_news_date(item.get('pub_date', '')),
             'score': item.get('score', 0),
         })
     prompt = {
@@ -782,11 +800,14 @@ def render_news_item(item):
     title = htmlmod.escape(item.get('title', ''))
     summary = htmlmod.escape(item.get('summary', ''))
     impact = htmlmod.escape(item.get('impact', ''))
+    pub_date = htmlmod.escape(item.get('pub_date', ''))
     importance = item.get('importance', item.get('score', 0))
     title_html = f'<a href="{link}" class="bank-news-title" target="_blank">{title}</a>' if link else f'<span class="bank-news-title">{title}</span>'
+    date_html = f'<div class="bank-news-date">新闻日期：{pub_date}</div>' if pub_date else ''
     return f'''
         <div class="bank-news-item">
             {title_html}
+            {date_html}
             <div class="bank-news-line"><span>影響力 {importance}：</span>{summary} {impact}</div>
         </div>'''
 
@@ -1026,6 +1047,12 @@ tr:hover td {{
 .bank-news-title:hover {{
     color: #ffd700;
 }}
+.bank-news-date {{
+    font-size: 11px;
+    color: #7f8790;
+    margin-top: 3px;
+    line-height: 1.35;
+}}
 .bank-news-line {{
     font-size: 12px;
     color: #9b9b9b;
@@ -1181,6 +1208,8 @@ def build_text_briefing(market_data, news_items, date_str, structured_briefing=N
         lines.append(f'--- {BANK_SECTION_TITLES[key]} ---')
         for item in structured_briefing.get(key, []):
             lines.append(f'  - {item.get("title", "")}')
+            if item.get('pub_date'):
+                lines.append(f'    新闻日期：{item.get("pub_date")}')
             lines.append(f'    摘要与影响：{item.get("summary", "")} {item.get("impact", "")}')
             if item.get('link'):
                 lines.append(f'    Link: {item.get("link")}')
