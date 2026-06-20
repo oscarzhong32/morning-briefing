@@ -1,0 +1,83 @@
+{
+  "email": {
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "sender_email": "your_sender_email@gmail.com",
+    "sender_password": "",
+    "recipient_email": "recipient@example.com",
+    "use_tls": true,
+    "recipient_emails": [
+      "recipient@example.com"
+    ]
+  },
+  "briefing": {
+    "timezone": "Asia/Hong_Kong",
+    "delivery_time": "07:00",
+    "weekdays_only": false,
+    "news_sources": [
+      "https://finance.yahoo.com/rss/topstories",
+      "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+      "https://www.economist.com/finance-and-economics/rss.xml",
+      "https://feeds.bloomberg.com/markets/news.rss",
+      "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"
+    ],
+    "market_data_symbols": {
+      "indices": {
+        "S&P 500": "^GSPC",
+        "Dow Jones": "^DJI",
+        "NASDAQ": "^IXIC",
+        "FTSE 100": "^FTSE",
+        "Nikkei 225": "^N225",
+        "Hang Seng": "^HSI",
+        "Shanghai": "000001.SS"
+      },
+      "currencies": {
+        "EUR/USD": "EURUSD=X",
+        "GBP/USD": "GBPUSD=X",
+        "USD/JPY": "USDJPY=X",
+        "USD/CNH": "USDCNH=X"
+      },
+      "commodities": {
+        "Gold": "GC=F",
+        "Crude Oil": "CL=F",
+        "Bitcoin": "BTC-USD"
+      }
+    },
+    "newsapi": {
+      "enabled": true,
+      "language": "en",
+      "country": "",
+      "q": "",
+      "sources": "",
+      "api_key": ""
+    },
+    "gnews": {
+      "enabled": true,
+      "language": "en",
+      "country": "",
+      "q": "",
+      "api_key": ""
+    },
+    "source_weights": {
+      "bloomberg.com": 30,
+      "reuters.com": 30,
+      "wsj.com": 28,
+      "economist.com": 25,
+      "ft.com": 25,
+      "cnbc.com": 22,
+      "marketwatch.com": 20,
+      "finance.yahoo.com": 18,
+      "nytimes.com": 18,
+      "washingtonexaminer.com": 15,
+      "zerohedge.com": 12,
+      "default": 10
+    },
+    "keyword_scores": {
+      "fire": 30,
+      "critical": 25,
+      "high": 20,
+      "medium": 12,
+      "low": 6
+    }
+  }
+}

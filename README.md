@@ -1,78 +1,152 @@
-﻿# Morning Briefing — 晨间简报系统
+# Morning Briefing
 
-一个 Bloomberg 风格的专业金融晨间简报自动化系统，每天自动生成并通过邮件发送。
+Morning Briefing is a daily financial newsletter generator. It pulls market data, combines RSS with news APIs, uses AI to classify and rank stories, then renders a Bloomberg-style email and saves a local HTML archive.
 
-## 系统架构
+## What it does
 
-```
-morning_briefing/
-├── morning_briefing.py    ← 核心脚本：采集数据 → 生成简报 → 发送邮件
-├── config.json            ← 配置：邮箱、数据源、定时参数
-├── setup_task.ps1         ← 一键注册 Windows 定时任务
-├── briefing_YYYY-MM-DD.html  ← 每日生成的简报（自动归档）
-└── run_elevated.ps1       ← 提权运行脚本（UAC）
-```
+- Fetches market data for indices, FX, commodities, and crypto
+- Collects news from Yahoo RSS plus NewsAPI and GNews
+- Sends the combined candidate pool to Agnes AI for sector classification and importance ranking
+- Builds a sector-based briefing:
+  - Global macro
+  - Mainland / Hong Kong / Macau
+  - Middle East macro
+  - Market liquidity and multi-asset snapshot
+  - Senior insight
+  - Key entity watchlist
+- Sends the briefing by email and saves a dated HTML file locally
 
-## 快速开始
+## How it works
 
-### 1️⃣ 配置 Gmail 应用密码
+1. RSS, NewsAPI, and GNews are fetched in parallel-ish sequence.
+2. The result is deduplicated into one candidate pool.
+3. Agnes AI receives up to 90 candidates and returns structured JSON.
+4. The app validates and normalizes the AI output.
+5. Each sector is sorted by `importance` and capped at 10 stories.
+6. The email HTML is rendered with an inline dark shell so Gmail keeps the black background.
 
-由于开启了两步验证，Gmail 需要使用**应用专用密码**：
+## Files
 
-1. 打开 https://myaccount.google.com/apppasswords
-2. 选择「邮件」→「Windows 计算机」，生成 16 位密码
-3. 编辑 `config.json`，填入密码：
+- `morning_briefing.py` - main app
+- `config.json` - local config used by the script
+- `config.example.json` - template users should copy and fill in
+- `setup_task.ps1` - Windows scheduled task helper
+- `.github/workflows/briefing.yml` - GitHub Actions schedule
 
-```json
-"sender_password": "xxxx xxxx xxxx xxxx"
-```
+## Configuration
 
-### 2️⃣ 注册定时任务（管理员权限）
+Start by copying `config.example.json` to `config.json`, then fill in the values below.
 
-方式一：右键点击 `setup_task.ps1` → **以管理员身份运行**（PowerShell）
-方式二：手动注册（管理员 PowerShell）：
+### Email settings
+
+- `smtp_server` - SMTP host, usually `smtp.gmail.com`
+- `smtp_port` - SMTP port, usually `587`
+- `sender_email` - Gmail sender address
+- `sender_password` - Gmail app password or leave blank and use `BRIEFING_EMAIL_PASSWORD`
+- `recipient_email` - primary recipient
+- `recipient_emails` - list of recipients
+- `use_tls` - usually `true`
+
+### Briefing settings
+
+- `timezone` - usually `Asia/Hong_Kong`
+- `delivery_time` - daily send time
+- `weekdays_only` - set `false` if you want 7-day delivery
+
+### News sources
+
+RSS sources are listed under `briefing.news_sources`. You can add or remove feeds there.
+
+### AI and news API keys
+
+These are read from environment variables first:
+
+- `AGNES_API_KEY`
+- `NEWSAPI_KEY`
+- `GNEWS_KEY`
+- `BRIEFING_EMAIL_PASSWORD`
+
+You can also put the keys in `config.json`, but environment variables are recommended.
+
+## API setup
+
+### Agnes AI
+
+Used for classification, ranking, and summary generation.
+
+Set:
+
+- `AGNES_API_KEY`
+- optional `AGNES_BASE_URL`
+- optional `AGNES_MODEL`
+
+### NewsAPI
+
+Used as an extra news candidate source.
+
+Set:
+
+- `NEWSAPI_KEY`
+
+Useful query fields in config:
+
+- `enabled`
+- `language`
+- `country`
+- `q`
+- `sources`
+
+### GNews
+
+Used as an extra news candidate source.
+
+Set:
+
+- `GNEWS_KEY`
+
+Useful query fields in config:
+
+- `enabled`
+- `language`
+- `country`
+- `q`
+
+## Running locally
 
 ```powershell
-$Action = New-ScheduledTaskAction -Execute "C:\Users\ZhuanZ\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -Argument "`"C:\Users\ZhuanZ\Documents\Codex\2026-06-19\new-chat-2\outputs\morning_briefing\morning_briefing.py`"" -WorkingDirectory "C:\Users\ZhuanZ\Documents\Codex\2026-06-19\new-chat-2\outputs\morning_briefing"
-$Trigger = New-ScheduledTaskTrigger -Daily -At "07:00"
-$Settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 1)
-$Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Limited
-Register-ScheduledTask -TaskName "MorningFinancialBriefing" -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force
+python morning_briefing.py
 ```
 
-### 3️⃣ 手动测试
+The script writes a dated `briefing_YYYY-MM-DD.html` file in the project folder.
 
-```powershell
-python "C:\Users\ZhuanZ\Documents\Codex\2026-06-19\new-chat-2\outputs\morning_briefing\morning_briefing.py"
-```
+## Email delivery
 
-### 4️⃣ 查看今天的简报
+If a sender password is configured, the script sends the email automatically.
+If not, it still generates the local HTML file.
 
-已生成的简报以 HTML 格式保存在同目录下：
-`briefing_2026-06-19.html`
+## Scheduling
 
-直接用浏览器打开即可查看。
+### Windows Task Scheduler
 
-## Bloomberg 风格说明
+Run `setup_task.ps1` as Administrator.
 
-简报采用 Bloomberg Terminal 标志性的深色主题（`#0a0a0a` 背景 + `#ffd700` 金色高亮），版面包含：
+### GitHub Actions
 
-- **顶部**：金色边框标题 + 日期 / Daily Edition
-- **Market Overview**：全球主要指数实时行情（▲/▼色标）
-- **Currencies**：主要外汇对报价
-- **Commodities & Crypto**：黄金、原油、比特币
-- **Top Stories**：20 条精选全球金融新闻（带编号和摘要）
-- **页脚**：免责声明
+The workflow runs daily and expects these secrets:
 
-## 数据源
+- `BRIEFING_EMAIL_PASSWORD`
+- `AGNES_API_KEY`
+- `NEWSAPI_KEY`
+- `GNEWS_KEY`
 
-| 类别 | 来源 |
-|------|------|
-| 行情数据 | Yahoo Finance (unofficial API) |
-| 金融新闻 | Yahoo Finance RSS, MarketWatch RSS, The Economist |
+If you only want local email delivery, you can skip the news API secrets and the app will fall back to RSS-only candidate sources.
 
-## 取消定时任务
+## Notes
 
-```powershell
-Unregister-ScheduledTask -TaskName "MorningFinancialBriefing" -Confirm:$false
-```
+- Yahoo RSS is already part of the current setup.
+- The app does not force every sector to have 10 stories.
+- If a sector has fewer relevant stories, it stays smaller rather than mixing unrelated stories.
+
+## License
+
+No license has been set yet.

@@ -1,4 +1,5 @@
 *.html
+config.json
 __pycache__/
 .superpowers/
 tmp/

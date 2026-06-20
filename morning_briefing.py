@@ -12,6 +12,7 @@ import re
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 import xml.etree.ElementTree as ET
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -22,6 +23,10 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, 'config.json')
 AGNES_BASE_URL = os.environ.get('AGNES_BASE_URL', 'https://apihub.agnes-ai.com/v1')
 AGNES_MODEL = os.environ.get('AGNES_MODEL', 'agnes-2.0-flash')
+RSS_CANDIDATE_LIMIT = 50
+NEWSAPI_CANDIDATE_LIMIT = 20
+GNEWS_CANDIDATE_LIMIT = 20
+NEWS_CANDIDATE_LIMIT = RSS_CANDIDATE_LIMIT + NEWSAPI_CANDIDATE_LIMIT + GNEWS_CANDIDATE_LIMIT
 
 def load_config():
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
@@ -60,6 +65,92 @@ def fetch_rss(url, timeout=15):
     except Exception as e:
         print(f'  [WARN] Failed to fetch {url}: {e}', file=sys.stderr)
     return items
+
+def normalize_candidate(title, link, description, pub_date, source_name, market_data):
+    clean_desc = re.sub(r'<[^>]+>', '', description or '')
+    analysis = generate_analysis(title, clean_desc, market_data)
+    return {
+        'title': (title or '').strip(),
+        'link': (link or '').strip(),
+        'description': clean_desc.strip(),
+        'pub_date': (pub_date or '').strip(),
+        'source': source_name,
+        'analysis': analysis,
+    }
+
+def fetch_newsapi_articles(config, market_data):
+    cfg = config.get('briefing', {}).get('newsapi', {})
+    api_key = os.environ.get('NEWSAPI_KEY') or cfg.get('api_key', '')
+    if not api_key:
+        return []
+    params = {
+        'apiKey': api_key,
+        'pageSize': str(NEWSAPI_CANDIDATE_LIMIT),
+        'sortBy': 'publishedAt',
+        'language': cfg.get('language', 'en'),
+    }
+    if cfg.get('country'):
+        params['country'] = cfg['country']
+    if cfg.get('q'):
+        params['q'] = cfg['q']
+    elif cfg.get('sources'):
+        params['sources'] = cfg['sources']
+    url = 'https://newsapi.org/v2/everything?' + urllib.parse.urlencode(params)
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        articles = data.get('articles', [])[:NEWSAPI_CANDIDATE_LIMIT]
+        out = []
+        for article in articles:
+            out.append(normalize_candidate(
+                article.get('title', ''),
+                article.get('url', ''),
+                article.get('description', '') or article.get('content', ''),
+                article.get('publishedAt', ''),
+                article.get('source', {}).get('name', 'NewsAPI'),
+                market_data
+            ))
+        return out
+    except Exception as e:
+        print(f'  [WARN] NewsAPI fetch failed: {e}', file=sys.stderr)
+        return []
+
+def fetch_gnews_articles(config, market_data):
+    cfg = config.get('briefing', {}).get('gnews', {})
+    api_key = os.environ.get('GNEWS_KEY') or cfg.get('api_key', '')
+    if not api_key:
+        return []
+    params = {
+        'apikey': api_key,
+        'max': str(GNEWS_CANDIDATE_LIMIT),
+        'sortby': 'publishedAt',
+        'lang': cfg.get('language', 'en'),
+    }
+    if cfg.get('country'):
+        params['country'] = cfg['country']
+    if cfg.get('q'):
+        params['q'] = cfg['q']
+    url = 'https://gnews.io/api/v4/search?' + urllib.parse.urlencode(params)
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        articles = data.get('articles', [])[:GNEWS_CANDIDATE_LIMIT]
+        out = []
+        for article in articles:
+            out.append(normalize_candidate(
+                article.get('title', ''),
+                article.get('url', ''),
+                article.get('description', '') or article.get('content', ''),
+                article.get('publishedAt', ''),
+                article.get('source', {}).get('name', 'GNews'),
+                market_data
+            ))
+        return out
+    except Exception as e:
+        print(f'  [WARN] GNews fetch failed: {e}', file=sys.stderr)
+        return []
 
 def fetch_yahoo_finance_data(symbol):
     """Fetch current price data from Yahoo Finance (unofficial API)."""
@@ -152,7 +243,7 @@ def collect_news(config, market_data):
     seen_links = set()
     sw = config['briefing'].get('source_weights', {})
     ks = config['briefing'].get('keyword_scores', {})
-    for url in config['briefing']['news_sources']:
+    for url in config['briefing'].get('news_sources', []):
         items = fetch_rss(url)
         for title, link, desc, pub in items:
             if link and link not in seen_links:
@@ -165,15 +256,29 @@ def collect_news(config, market_data):
                     'link': link.strip(),
                     'description': clean_desc.strip(),
                     'pub_date': pub.strip(),
+                    'source': 'rss',
                     'analysis': analysis,
                     'score': score
                 })
-    all_items.sort(key=lambda x: (-x['score'], x['pub_date']))
-    print(f'  Scored {len(all_items)} items, selecting top 18', file=sys.stderr)
-    for i, item in enumerate(all_items[:18]):
+    for item in fetch_newsapi_articles(config, market_data):
+        marker = item.get('link') or item.get('title')
+        if marker and marker not in seen_links:
+            seen_links.add(marker)
+            item['score'] = max(item.get('score', 0), score_news_item(item['title'], item['description'], item.get('link', ''), item.get('pub_date', ''), sw, ks))
+            all_items.append(item)
+    for item in fetch_gnews_articles(config, market_data):
+        marker = item.get('link') or item.get('title')
+        if marker and marker not in seen_links:
+            seen_links.add(marker)
+            item['score'] = max(item.get('score', 0), score_news_item(item['title'], item['description'], item.get('link', ''), item.get('pub_date', ''), sw, ks))
+            all_items.append(item)
+
+    all_items.sort(key=lambda x: (-x.get('score', 0), x.get('pub_date', '')))
+    print(f'  Scored {len(all_items)} items, selecting top {NEWS_CANDIDATE_LIMIT}', file=sys.stderr)
+    for i, item in enumerate(all_items[:NEWS_CANDIDATE_LIMIT]):
         msg = '    #' + str(i+1) + ': [' + str(item['score']) + 'pts] ' + item['title'][:60] + '...'
         print(msg, file=sys.stderr)
-    return all_items[:18]
+    return all_items[:NEWS_CANDIDATE_LIMIT]
 def strip_tags(text):
     return re.sub(r'<[^>]+>', '', text)
 
@@ -298,6 +403,9 @@ BANK_SECTION_TITLES = {
     'sources': '来源',
 }
 
+NEWS_SECTION_KEYS = ('global_macro', 'mainland_hk_macao', 'middle_east_macro')
+MAX_NEWS_PER_SECTION = 10
+
 def get_local_now(config):
     tz_name = config.get('briefing', {}).get('timezone', 'Asia/Hong_Kong')
     try:
@@ -328,6 +436,7 @@ def item_summary(item):
         'impact': truncate_text(impact, 140),
         'link': item.get('link', ''),
         'score': item.get('score', 0),
+        'importance': int(item.get('importance', item.get('score', 0)) or 0),
     }
 
 def classify_news_item(item):
@@ -389,12 +498,107 @@ def default_entity_watch(news_items):
             })
     return rows[:5]
 
+def normalize_news_entry(item):
+    if not isinstance(item, dict):
+        return item_summary({'title': str(item), 'description': '', 'analysis': '', 'link': '', 'score': 0})
+    normalized = {
+        'title': truncate_text(item.get('title') or item.get('headline') or '', 90),
+        'summary': truncate_text(item.get('summary') or item.get('description') or '', 110),
+        'impact': truncate_text(item.get('impact') or item.get('analysis') or '', 150),
+        'link': item.get('link') or '',
+        'score': item.get('score', 0),
+    }
+    if not normalized['summary']:
+        normalized['summary'] = '市场仍需关注该事件对风险偏好、利率路径及跨资产资金流向的影响。'
+    if not normalized['impact']:
+        normalized['impact'] = '对相关资产价格和配置节奏具有跟踪意义。'
+    try:
+        normalized['importance'] = int(item.get('importance', item.get('score', 0)))
+    except Exception:
+        normalized['importance'] = 0
+    return normalized
+
+def news_belongs_to_section(item, section_key):
+    text = (item.get('title', '') + ' ' + item.get('summary', '') + ' ' + item.get('impact', '')).lower()
+    if section_key == 'global_macro':
+        return any(w in text for w in [
+            'fed', 'federal reserve', 'ecb', 'boj', 'central bank', 'inflation', 'cpi', 'gdp',
+            'recession', 'market', 'stocks', 'equity', 'tech', 'nvidia', 'semiconductor', 'bitcoin',
+            'crypto', 'dollar', 'yields', 'treasury', 'bond', 'trade', 'tariff', 'g7'
+        ]) and not any(w in text for w in ['hong kong', 'china', 'macau', 'macao', 'pboc', 'yuan', 'rmb'])
+    if section_key == 'mainland_hk_macao':
+        return any(w in text for w in ['china', 'hong kong', 'macau', 'macao', 'pboc', 'yuan', 'renminbi', 'rmb', 'hang seng', 'shanghai', 'beijing', 'shenzhen', 'a股', '港股', '人民銀行', '人民银行'])
+    if section_key == 'middle_east_macro':
+        return any(w in text for w in ['middle east', 'iran', 'israel', 'gaza', 'lebanon', 'hormuz', 'saudi', 'uae', 'qatar', 'opec', 'iraq', 'kuwait', 'bahrain', 'yemen'])
+    return True
+
+def sort_section_items(items):
+    def score_of(item):
+        return int(item.get('importance', item.get('score', 0)) or 0)
+    return sorted(items, key=lambda item: (-score_of(item), item.get('title', '')))
+
+def normalize_structured_briefing(data, market_data, news_items):
+    structured = {key: data.get(key, []) if isinstance(data, dict) else [] for key in BANK_SECTION_ORDER}
+    fallback_by_section = {key: [] for key in NEWS_SECTION_KEYS}
+    seen_links = {key: set() for key in NEWS_SECTION_KEYS}
+
+    for item in news_items:
+        summary = item_summary(item)
+        fallback_by_section[classify_news_item(item)].append(summary)
+
+    for key in NEWS_SECTION_KEYS:
+        existing = structured.get(key, [])
+        if not isinstance(existing, list):
+            existing = []
+        normalized = [normalize_news_entry(item) for item in existing]
+        normalized = [
+            item for item in normalized
+            if item.get('title') and news_belongs_to_section(item, key)
+        ]
+        for item in normalized:
+            seen_links[key].add(item.get('link') or item.get('title'))
+
+        candidates = [c for c in fallback_by_section[key] if news_belongs_to_section(c, key)]
+        for candidate in candidates:
+            marker = candidate.get('link') or candidate.get('title')
+            if marker in seen_links[key]:
+                continue
+            normalized.append(candidate)
+            seen_links[key].add(marker)
+            if len(normalized) >= MAX_NEWS_PER_SECTION:
+                break
+
+        normalized = sort_section_items(normalized)
+        structured[key] = normalized[:MAX_NEWS_PER_SECTION]
+
+    liquidity = structured.get('liquidity_assets')
+    if not isinstance(liquidity, list) or not liquidity:
+        structured['liquidity_assets'] = default_liquidity_assets(market_data)
+
+    insight = structured.get('senior_insight')
+    if not isinstance(insight, str) or not insight.strip():
+        top_titles = '；'.join(truncate_text(i.get('title', ''), 35) for i in news_items[:3])
+        structured['senior_insight'] = (
+            f'今日核心变量集中在政策预期、美元利率与区域风险的再定价。{top_titles}。'
+            '配置上宜关注美元流动性对权益估值的压制、人民币及港元资产的政策支撑，以及能源与黄金的事件驱动波动。'
+        )
+
+    entity_watch = structured.get('entity_watch')
+    if not isinstance(entity_watch, list) or not entity_watch:
+        structured['entity_watch'] = default_entity_watch(news_items)
+
+    sources = structured.get('sources')
+    if not isinstance(sources, list) or not sources:
+        structured['sources'] = sorted({re.sub(r'^www\.', '', urllib.parse.urlparse(i.get('link', '')).netloc) for i in news_items if i.get('link')})
+
+    return {key: structured[key] for key in BANK_SECTION_ORDER}
+
 def build_structured_briefing(market_data, news_items, ai_client=None):
     if ai_client:
         try:
             ai_result = ai_client(market_data, news_items)
             if validate_structured_briefing(ai_result):
-                return ai_result
+                return normalize_structured_briefing(ai_result, market_data, news_items)
             print('  [WARN] Agnes response failed validation; using rule fallback.', file=sys.stderr)
         except Exception as e:
             print(f'  [WARN] Agnes briefing generation failed: {e}', file=sys.stderr)
@@ -405,7 +609,7 @@ def build_structured_briefing(market_data, news_items, ai_client=None):
         if len(structured[section]) < 5:
             structured[section].append(item_summary(item))
 
-    for section in ('global_macro', 'mainland_hk_macao', 'middle_east_macro'):
+    for section in NEWS_SECTION_KEYS:
         if not structured[section]:
             for item in news_items:
                 if item_summary(item) not in structured[section]:
@@ -420,7 +624,7 @@ def build_structured_briefing(market_data, news_items, ai_client=None):
     )
     structured['entity_watch'] = default_entity_watch(news_items)
     structured['sources'] = sorted({re.sub(r'^www\.', '', urllib.parse.urlparse(i.get('link', '')).netloc) for i in news_items if i.get('link')})
-    return structured
+    return normalize_structured_briefing(structured, market_data, news_items)
 
 def validate_structured_briefing(data):
     if not isinstance(data, dict):
@@ -435,7 +639,7 @@ def agnes_structured_briefing(market_data, news_items):
     if not api_key:
         return None
     payload_items = []
-    for item in news_items[:18]:
+    for item in news_items[:NEWS_CANDIDATE_LIMIT]:
         payload_items.append({
             'title': truncate_text(item.get('title', ''), 160),
             'description': truncate_text(item.get('description', ''), 220),
@@ -446,13 +650,25 @@ def agnes_structured_briefing(market_data, news_items):
     prompt = {
         'market_data': market_data,
         'news_items': payload_items,
+        'classification_rules': {
+            'global_macro': '美国、欧洲、日本、全球央行、通胀、增长、贸易、科技、银行、加密货币等全球宏观和市场新闻。',
+            'mainland_hk_macao': '仅限中国内地、香港、澳门、人民币、人民银行、A股、港股、沪深交易所、中资金融机构及粤港澳相关新闻。',
+            'middle_east_macro': '仅限中东地区、海湾、伊朗、以色列、巴勒斯坦、黎巴嫩、霍尔木兹、OPEC、区域能源供应及地缘风险新闻。',
+        },
+        'instructions': [
+            '先从全部候选新闻中判断每条新闻归属，再为每个新闻栏目选择最多10条最相关新闻。',
+            '不要为了凑数把不相关新闻放入栏目；例如 South Africa 不属于内地及港澳。',
+            '为每条新闻生成 importance 影响力分数，10分制或100分制都可以，分数越高影响越大。',
+            '如果某栏目不足10条，返回已有相关新闻即可，不要补不相关内容。',
+            '标题、摘要、影响与 importance 必须基于候选新闻，不要编造不存在的具体事件。',
+        ],
         'required_json_schema': {
-            'global_macro': [{'title': 'str', 'summary': 'str', 'impact': 'str', 'link': 'str'}],
-            'mainland_hk_macao': [{'title': 'str', 'summary': 'str', 'impact': 'str', 'link': 'str'}],
-            'middle_east_macro': [{'title': 'str', 'summary': 'str', 'impact': 'str', 'link': 'str'}],
+            'global_macro': [{'title': 'str', 'summary': 'str', 'impact': 'str', 'importance': 'int', 'link': 'str'}],
+            'mainland_hk_macao': [{'title': 'str', 'summary': 'str', 'impact': 'str', 'importance': 'int', 'link': 'str'}],
+            'middle_east_macro': [{'title': 'str', 'summary': 'str', 'impact': 'str', 'importance': 'int', 'link': 'str'}],
             'liquidity_assets': [{'title': 'str', 'body': 'str'}],
             'senior_insight': 'str',
-            'entity_watch': [{'entity': 'str', 'summary': 'str', 'impact': 'str', 'link': 'str'}],
+            'entity_watch': [{'entity': 'str', 'summary': 'str', 'impact': 'str', 'importance': 'int', 'link': 'str'}],
             'sources': ['str'],
         },
     }
@@ -485,11 +701,12 @@ def render_news_item(item):
     title = htmlmod.escape(item.get('title', ''))
     summary = htmlmod.escape(item.get('summary', ''))
     impact = htmlmod.escape(item.get('impact', ''))
+    importance = item.get('importance', item.get('score', 0))
     title_html = f'<a href="{link}" class="bank-news-title" target="_blank">{title}</a>' if link else f'<span class="bank-news-title">{title}</span>'
     return f'''
         <div class="bank-news-item">
             {title_html}
-            <div class="bank-news-line"><span>摘要与影响：</span>{summary} {impact}</div>
+            <div class="bank-news-line"><span>影響力 {importance}：</span>{summary} {impact}</div>
         </div>'''
 
 def render_bank_sections(structured):
@@ -781,8 +998,11 @@ tr:hover td {{
 }}
 </style>
 </head>
-<body>
-<div class="container">
+<body bgcolor="#0a0a0a" style="margin:0;padding:0;background-color:#0a0a0a;color:#d4d4d4;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#0a0a0a" style="background-color:#0a0a0a;width:100%;margin:0;padding:0;">
+<tr>
+<td align="center" bgcolor="#0a0a0a" style="background-color:#0a0a0a;">
+<div class="container" style="background-color:#0a0a0a;color:#d4d4d4;max-width:680px;margin:0 auto;padding:20px;">
 
 <!-- Header -->
 <div class="header">
@@ -842,6 +1062,9 @@ tr:hover td {{
 </div>
 
 </div>
+</td>
+</tr>
+</table>
 </body>
 </html>'''
     return html_content
