@@ -20,6 +20,8 @@ from email import encoders
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, 'config.json')
+AGNES_BASE_URL = os.environ.get('AGNES_BASE_URL', 'https://apihub.agnes-ai.com/v1')
+AGNES_MODEL = os.environ.get('AGNES_MODEL', 'agnes-2.0-flash')
 
 def load_config():
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
@@ -167,11 +169,11 @@ def collect_news(config, market_data):
                     'score': score
                 })
     all_items.sort(key=lambda x: (-x['score'], x['pub_date']))
-    print(f'  Scored {len(all_items)} items, selecting top 10', file=sys.stderr)
-    for i, item in enumerate(all_items[:10]):
+    print(f'  Scored {len(all_items)} items, selecting top 18', file=sys.stderr)
+    for i, item in enumerate(all_items[:18]):
         msg = '    #' + str(i+1) + ': [' + str(item['score']) + 'pts] ' + item['title'][:60] + '...'
         print(msg, file=sys.stderr)
-    return all_items[:10]
+    return all_items[:18]
 def strip_tags(text):
     return re.sub(r'<[^>]+>', '', text)
 
@@ -275,7 +277,251 @@ def score_text(score):
     if score >= 60: return 'High'
     if score >= 40: return 'Medium'
     return 'Standard'
-def build_html_briefing(market_data, news_items, date_str):
+
+BANK_SECTION_ORDER = [
+    'global_macro',
+    'mainland_hk_macao',
+    'middle_east_macro',
+    'liquidity_assets',
+    'senior_insight',
+    'entity_watch',
+    'sources',
+]
+
+BANK_SECTION_TITLES = {
+    'global_macro': '全球宏观',
+    'mainland_hk_macao': '内地及港澳',
+    'middle_east_macro': '中东宏观',
+    'liquidity_assets': '市场流动性与大类资产',
+    'senior_insight': '今日高层洞察',
+    'entity_watch': '重点关注实体动态',
+    'sources': '来源',
+}
+
+def get_local_now(config):
+    tz_name = config.get('briefing', {}).get('timezone', 'Asia/Hong_Kong')
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        if tz_name == 'Asia/Hong_Kong':
+            return datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).astimezone(
+                datetime.timezone(datetime.timedelta(hours=8))
+            )
+        return datetime.datetime.now()
+
+def truncate_text(text, limit):
+    text = re.sub(r'\s+', ' ', strip_tags(text or '')).strip()
+    return text if len(text) <= limit else text[:limit - 3].rstrip() + '...'
+
+def market_line(name, info):
+    if not info:
+        return ''
+    return f'{name}{format_price(info["price"])}，{info["change_pct"]:+.2f}%'
+
+def item_summary(item):
+    desc = truncate_text(item.get('description', ''), 90)
+    impact = item.get('analysis') or '该事件对跨资产风险偏好和资金流向具有跟踪价值。'
+    return {
+        'title': truncate_text(item.get('title', ''), 90),
+        'summary': desc,
+        'impact': truncate_text(impact, 140),
+        'link': item.get('link', ''),
+        'score': item.get('score', 0),
+    }
+
+def classify_news_item(item):
+    text = (item.get('title', '') + ' ' + item.get('description', '') + ' ' + item.get('analysis', '')).lower()
+    if any(w in text for w in ['middle east', 'iran', 'israel', 'gaza', 'lebanon', 'hormuz', 'saudi', 'uae', 'qatar', 'opec']):
+        return 'middle_east_macro'
+    if any(w in text for w in ['china', 'hong kong', 'macau', 'macao', 'pboc', 'yuan', 'renminbi', 'rmb', 'hang seng', 'shanghai', 'beijing', 'cnh', 'hkd']):
+        return 'mainland_hk_macao'
+    return 'global_macro'
+
+def default_liquidity_assets(market_data):
+    indices = market_data.get('indices', {})
+    currencies = market_data.get('currencies', {})
+    commodities = market_data.get('commodities', {})
+    hang_seng = market_line('恒指', indices.get('Hang Seng'))
+    spx = market_line('S&P 500', indices.get('S&P 500'))
+    nasdaq = market_line('NASDAQ', indices.get('NASDAQ'))
+    usdcnh = market_line('USD/CNH', currencies.get('USD/CNH'))
+    gold = market_line('黄金', commodities.get('Gold'))
+    oil = market_line('原油', commodities.get('Crude Oil'))
+    return [
+        {'title': '人民币流动性', 'body': f'人民币资金面维持观察，{usdcnh or "USD/CNH等待更新"}；外部美元利率与境内政策工具仍是短端资金价格的关键变量。'},
+        {'title': '港元流动性', 'body': f'港元资产关注港股成交与联系汇率区间，{hang_seng or "恒指等待更新"}；南向资金和IPO情绪影响本地风险偏好。'},
+        {'title': '美元流动性', 'body': '美元资金环境取决于美联储政策预期、美债收益率与美元指数方向，高利率维持对风险资产估值的约束。'},
+        {'title': '股票市场', 'body': f'权益市场分化运行，{spx or "美股等待更新"}，{nasdaq or "纳指等待更新"}；亚洲市场重点关注政策预期与科技板块弹性。'},
+        {'title': '美债市场', 'body': '美债收益率仍是全球资产定价锚，期限利差变化将影响成长股、黄金和高息货币表现。'},
+        {'title': '黄金及能源', 'body': f'{gold or "黄金等待更新"}，{oil or "原油等待更新"}；实际利率、美元方向及地缘风险共同驱动避险资产。'},
+    ]
+
+def default_entity_watch(news_items):
+    entities = [
+        ('Nvidia', ['nvidia', 'semiconductor', 'chip', 'ai']),
+        ('腾讯控股 0700.HK', ['tencent', '0700', 'hong kong tech']),
+        ('汇丰控股/渣打集团', ['hsbc', 'standard chartered', 'bank']),
+        ('香港特别行政区政府', ['hong kong', 'ipo', 'offshore yuan']),
+        ('人民银行', ['pboc', 'people bank', 'yuan', 'renminbi']),
+    ]
+    rows = []
+    used = set()
+    for name, keywords in entities:
+        for item in news_items:
+            text = (item.get('title', '') + ' ' + item.get('description', '')).lower()
+            if item.get('link') not in used and any(k in text for k in keywords):
+                used.add(item.get('link'))
+                rows.append({
+                    'entity': name,
+                    'summary': truncate_text(item.get('title', ''), 80),
+                    'impact': truncate_text(item.get('analysis', ''), 130),
+                    'link': item.get('link', ''),
+                })
+                break
+    if not rows:
+        for item in news_items[:4]:
+            rows.append({
+                'entity': truncate_text(item.get('title', '').split(' - ')[0], 40),
+                'summary': truncate_text(item.get('title', ''), 80),
+                'impact': truncate_text(item.get('analysis', ''), 130),
+                'link': item.get('link', ''),
+            })
+    return rows[:5]
+
+def build_structured_briefing(market_data, news_items, ai_client=None):
+    if ai_client:
+        try:
+            ai_result = ai_client(market_data, news_items)
+            if validate_structured_briefing(ai_result):
+                return ai_result
+            print('  [WARN] Agnes response failed validation; using rule fallback.', file=sys.stderr)
+        except Exception as e:
+            print(f'  [WARN] Agnes briefing generation failed: {e}', file=sys.stderr)
+
+    structured = {key: [] for key in BANK_SECTION_ORDER}
+    for item in news_items:
+        section = classify_news_item(item)
+        if len(structured[section]) < 5:
+            structured[section].append(item_summary(item))
+
+    for section in ('global_macro', 'mainland_hk_macao', 'middle_east_macro'):
+        if not structured[section]:
+            for item in news_items:
+                if item_summary(item) not in structured[section]:
+                    structured[section].append(item_summary(item))
+                    break
+
+    structured['liquidity_assets'] = default_liquidity_assets(market_data)
+    top_titles = '；'.join(truncate_text(i.get('title', ''), 35) for i in news_items[:3])
+    structured['senior_insight'] = (
+        f'今日核心变量集中在政策预期、美元利率与区域风险的再定价。{top_titles}。'
+        '配置上宜关注美元流动性对权益估值的压制、人民币及港元资产的政策支撑，以及能源与黄金的事件驱动波动。'
+    )
+    structured['entity_watch'] = default_entity_watch(news_items)
+    structured['sources'] = sorted({re.sub(r'^www\.', '', urllib.parse.urlparse(i.get('link', '')).netloc) for i in news_items if i.get('link')})
+    return structured
+
+def validate_structured_briefing(data):
+    if not isinstance(data, dict):
+        return False
+    for key in BANK_SECTION_ORDER:
+        if key not in data:
+            return False
+    return isinstance(data.get('senior_insight'), str) and isinstance(data.get('liquidity_assets'), list)
+
+def agnes_structured_briefing(market_data, news_items):
+    api_key = os.environ.get('AGNES_API_KEY')
+    if not api_key:
+        return None
+    payload_items = []
+    for item in news_items[:18]:
+        payload_items.append({
+            'title': truncate_text(item.get('title', ''), 160),
+            'description': truncate_text(item.get('description', ''), 220),
+            'analysis': truncate_text(item.get('analysis', ''), 180),
+            'link': item.get('link', ''),
+            'score': item.get('score', 0),
+        })
+    prompt = {
+        'market_data': market_data,
+        'news_items': payload_items,
+        'required_json_schema': {
+            'global_macro': [{'title': 'str', 'summary': 'str', 'impact': 'str', 'link': 'str'}],
+            'mainland_hk_macao': [{'title': 'str', 'summary': 'str', 'impact': 'str', 'link': 'str'}],
+            'middle_east_macro': [{'title': 'str', 'summary': 'str', 'impact': 'str', 'link': 'str'}],
+            'liquidity_assets': [{'title': 'str', 'body': 'str'}],
+            'senior_insight': 'str',
+            'entity_watch': [{'entity': 'str', 'summary': 'str', 'impact': 'str', 'link': 'str'}],
+            'sources': ['str'],
+        },
+    }
+    body = {
+        'model': AGNES_MODEL,
+        'messages': [
+            {'role': 'system', 'content': '你是银行投资晨报编辑。只输出合法 JSON，不要 Markdown。语气专业、简洁、中文。'},
+            {'role': 'user', 'content': json.dumps(prompt, ensure_ascii=False)},
+        ],
+        'temperature': 0.2,
+    }
+    req = urllib.request.Request(
+        AGNES_BASE_URL.rstrip('/') + '/chat/completions',
+        data=json.dumps(body).encode('utf-8'),
+        headers={
+            'Authorization': 'Bearer ' + api_key,
+            'Content-Type': 'application/json',
+        },
+        method='POST',
+    )
+    with urllib.request.urlopen(req, timeout=35) as resp:
+        raw = json.loads(resp.read().decode('utf-8'))
+    content = raw['choices'][0]['message']['content'].strip()
+    if content.startswith('```'):
+        content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content, flags=re.S)
+    return json.loads(content)
+
+def render_news_item(item):
+    link = htmlmod.escape(item.get('link', ''))
+    title = htmlmod.escape(item.get('title', ''))
+    summary = htmlmod.escape(item.get('summary', ''))
+    impact = htmlmod.escape(item.get('impact', ''))
+    title_html = f'<a href="{link}" class="bank-news-title" target="_blank">{title}</a>' if link else f'<span class="bank-news-title">{title}</span>'
+    return f'''
+        <div class="bank-news-item">
+            {title_html}
+            <div class="bank-news-line"><span>摘要与影响：</span>{summary} {impact}</div>
+        </div>'''
+
+def render_bank_sections(structured):
+    def news_section(key):
+        rows = ''.join(render_news_item(i) for i in structured.get(key, []))
+        return f'<div class="section-title">{BANK_SECTION_TITLES[key]}</div><div class="bank-section">{rows}</div>'
+
+    liquidity_rows = ''.join(
+        f'<div class="asset-note"><span>{htmlmod.escape(i.get("title", ""))}</span>{htmlmod.escape(i.get("body", ""))}</div>'
+        for i in structured.get('liquidity_assets', [])
+    )
+    entity_rows = ''.join(
+        f'''<div class="bank-news-item">
+            <span class="bank-news-title">{htmlmod.escape(i.get("entity", ""))}</span>
+            <div class="bank-news-line"><span>摘要与潜在影响：</span>{htmlmod.escape(i.get("summary", ""))} {htmlmod.escape(i.get("impact", ""))}</div>
+        </div>'''
+        for i in structured.get('entity_watch', [])
+    )
+    sources = ' &middot; '.join(htmlmod.escape(s) for s in structured.get('sources', []) if s)
+    return f'''
+{news_section('global_macro')}
+{news_section('mainland_hk_macao')}
+{news_section('middle_east_macro')}
+<div class="section-title">{BANK_SECTION_TITLES['liquidity_assets']}</div>
+<div class="bank-section">{liquidity_rows}</div>
+<div class="section-title">{BANK_SECTION_TITLES['senior_insight']}</div>
+<div class="insight-box">{htmlmod.escape(structured.get('senior_insight', ''))}</div>
+<div class="section-title">{BANK_SECTION_TITLES['entity_watch']}</div>
+<div class="bank-section">{entity_rows}</div>
+<div class="sources-line">来源：{sources}</div>'''
+
+def build_html_briefing(market_data, news_items, date_str, structured_briefing=None):
     """Build Bloomberg-style HTML email."""
     m = market_data
 
@@ -313,29 +559,9 @@ def build_html_briefing(market_data, news_items, date_str):
     indices_rows = ''.join(idx_row(n, i) for n, i in m.get('indices', {}).items())
     currencies_rows = ''.join(curr_row(n, i) for n, i in m.get('currencies', {}).items())
     commodities_rows = ''.join(comm_row(n, i) for n, i in m.get('commodities', {}).items())
-
-    # --- Top 10 News with Analysis ---
-    news_rows = ''
-    for i, item in enumerate(news_items):
-        sd = strip_tags(item['description'])[:200]
-        if len(strip_tags(item['description'])) > 200:
-            sd += '...'
-        news_rows += f'''
-        <tr>
-            <td class="news-number">{i+1:02d}</td>
-            <td class="news-content">
-                <a href="{htmlmod.escape(item['link'])}" class="news-title" target="_blank">{htmlmod.escape(item['title'])}</a>
-                <div class="news-desc">{htmlmod.escape(sd)}</div>
-                <div class="analysis-box">
-                    <div class="analysis-label">分析师点评</div>
-                    <div class="analysis-text">{htmlmod.escape(item['analysis'])}</div>
-                    <div class="score-bar">
-                        <span class="score-dot {score_class(item['score'])}"></span>
-                        <span class="score-label">Importance: {score_text(item['score'])}</span>
-                    </div>
-                </div>
-            </td>
-        </tr>'''
+    if structured_briefing is None:
+        structured_briefing = build_structured_briefing(market_data, news_items)
+    bank_sections = render_bank_sections(structured_briefing)
 
     html_content = f'''<!DOCTYPE html>
 <html>
@@ -484,6 +710,61 @@ tr:hover td {{
     margin-top: 3px;
     line-height: 1.4;
 }}
+.bank-section {{
+    border-left: 2px solid #333;
+    padding-left: 12px;
+}}
+.bank-news-item {{
+    padding: 9px 0 11px;
+    border-bottom: 1px solid #1a1a1a;
+}}
+.bank-news-title {{
+    font-size: 14px;
+    font-weight: 650;
+    color: #f0f0f0;
+    text-decoration: none;
+    line-height: 1.45;
+}}
+.bank-news-title:hover {{
+    color: #ffd700;
+}}
+.bank-news-line {{
+    font-size: 12px;
+    color: #9b9b9b;
+    margin-top: 4px;
+    line-height: 1.55;
+}}
+.bank-news-line span {{
+    color: #ffd700;
+    font-weight: 600;
+}}
+.asset-note {{
+    font-size: 12px;
+    color: #a8a8a8;
+    line-height: 1.6;
+    padding: 8px 0;
+    border-bottom: 1px solid #1a1a1a;
+}}
+.asset-note span {{
+    display: block;
+    color: #e0e0e0;
+    font-weight: 650;
+    margin-bottom: 2px;
+}}
+.insight-box {{
+    border: 1px solid #333;
+    background: #111;
+    padding: 12px 14px;
+    color: #d8d8d8;
+    font-size: 13px;
+    line-height: 1.65;
+}}
+.sources-line {{
+    margin-top: 22px;
+    color: #666;
+    font-size: 11px;
+    line-height: 1.5;
+}}
 .footer {{
     margin-top: 32px;
     padding-top: 16px;
@@ -548,13 +829,8 @@ tr:hover td {{
     </tbody>
 </table>
 
-<!-- Top 10 -->
-<div class="section-title">十大金融新闻 <span class="count">| 市场情报</span></div>
-<table class="news-table">
-    <tbody>
-        {news_rows}
-    </tbody>
-</table>
+<!-- Bank-style News Briefing -->
+{bank_sections}
 
 <!-- Footer -->
 <div class="footer">
@@ -570,8 +846,10 @@ tr:hover td {{
 </html>'''
     return html_content
 
-def build_text_briefing(market_data, news_items, date_str):
+def build_text_briefing(market_data, news_items, date_str, structured_briefing=None):
     """Build a plain-text version for email fallback."""
+    if structured_briefing is None:
+        structured_briefing = build_structured_briefing(market_data, news_items)
     lines = []
     lines.append('=' * 66)
     lines.append('  晨间简报 — 全球金融情报')
@@ -594,17 +872,31 @@ def build_text_briefing(market_data, news_items, date_str):
                     lines.append(f'{name:<24} {p:>12} {c:>10} {cp:>8}')
             lines.append('')
 
-    lines.append('--- TOP 10 FINANCIAL NEWS ---')
-    lines.append('')
-    for i, item in enumerate(news_items):
-        sd = strip_tags(item['description'])[:120]
-        if len(strip_tags(item['description'])) > 120:
-            sd += '...'
-        lines.append(f'  {i+1:2d}. {strip_tags(item["title"])}')
-        lines.append(f'       {sd}')
-        lines.append(f'       Link: {item["link"]}')
-        lines.append(f'       Analysis: {item["analysis"]}')
+    for key in ('global_macro', 'mainland_hk_macao', 'middle_east_macro'):
+        lines.append(f'--- {BANK_SECTION_TITLES[key]} ---')
+        for item in structured_briefing.get(key, []):
+            lines.append(f'  - {item.get("title", "")}')
+            lines.append(f'    摘要与影响：{item.get("summary", "")} {item.get("impact", "")}')
+            if item.get('link'):
+                lines.append(f'    Link: {item.get("link")}')
         lines.append('')
+
+    lines.append(f'--- {BANK_SECTION_TITLES["liquidity_assets"]} ---')
+    for item in structured_briefing.get('liquidity_assets', []):
+        lines.append(f'  - {item.get("title", "")}: {item.get("body", "")}')
+    lines.append('')
+
+    lines.append(f'--- {BANK_SECTION_TITLES["senior_insight"]} ---')
+    lines.append(structured_briefing.get('senior_insight', ''))
+    lines.append('')
+
+    lines.append(f'--- {BANK_SECTION_TITLES["entity_watch"]} ---')
+    for item in structured_briefing.get('entity_watch', []):
+        lines.append(f'  - {item.get("entity", "")}: {item.get("summary", "")} {item.get("impact", "")}')
+        lines.append('')
+
+    if structured_briefing.get('sources'):
+        lines.append('来源：' + ', '.join(structured_briefing.get('sources', [])))
 
     lines.append('')
     lines.append('=' * 66)
@@ -645,8 +937,8 @@ def main():
     print('Loading config...', file=sys.stderr)
     config = load_config()
 
-    today = datetime.date.today()
-    now_local = datetime.datetime.now()
+    now_local = get_local_now(config)
+    today = now_local.date()
     date_str = now_local.strftime('%A, %B %d, %Y')
 
     # Weekday check
@@ -661,9 +953,13 @@ def main():
     print('Collecting news...', file=sys.stderr)
     news = collect_news(config, market_data)
 
+    print('Building bank-style news structure...', file=sys.stderr)
+    ai_client = agnes_structured_briefing if os.environ.get('AGNES_API_KEY') else None
+    structured = build_structured_briefing(market_data, news, ai_client=ai_client)
+
     print('Building briefing HTML...', file=sys.stderr)
-    html_content = build_html_briefing(market_data, news, date_str)
-    text_content = build_text_briefing(market_data, news, date_str)
+    html_content = build_html_briefing(market_data, news, date_str, structured_briefing=structured)
+    text_content = build_text_briefing(market_data, news, date_str, structured_briefing=structured)
 
     # Save a local copy for reference
     output_dir = SCRIPT_DIR

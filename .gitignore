@@ -1,4 +1,7 @@
-﻿*.html
+*.html
+__pycache__/
+.superpowers/
+tmp/
 task_registered.txt
 update_email.py
 check_script.py

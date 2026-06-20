@@ -13,7 +13,7 @@
   "briefing": {
     "timezone": "Asia/Hong_Kong",
     "delivery_time": "07:00",
-    "weekdays_only": true,
+    "weekdays_only": false,
     "news_sources": [
       "https://finance.yahoo.com/rss/topstories",
       "https://feeds.content.dowjones.io/public/rss/mw_topstories",

@@ -2,7 +2,7 @@
 
 on:
   schedule:
-    - cron: '0 23 * * 0-4'
+    - cron: '0 23 * * *'
   workflow_dispatch:
 
 jobs:
@@ -26,6 +26,7 @@ jobs:
     - name: Run Morning Briefing
       env:
         BRIEFING_EMAIL_PASSWORD: ${{ secrets.BRIEFING_EMAIL_PASSWORD }}
+        AGNES_API_KEY: ${{ secrets.AGNES_API_KEY }}
       run: python3 morning_briefing.py 2>&1
     - name: Upload briefing HTML
       uses: actions/upload-artifact@v4

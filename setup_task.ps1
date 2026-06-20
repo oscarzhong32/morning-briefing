@@ -24,7 +24,7 @@ if (-not $IsAdmin) {
 
 # Create scheduled task
 $Action = New-ScheduledTaskAction -Execute $PythonPath -Argument "`"$ScriptPath`"" -WorkingDirectory $WorkingDir
-$Trigger = New-ScheduledTaskTrigger -Daily -At "07:00" -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday
+$Trigger = New-ScheduledTaskTrigger -Daily -At "07:00"
 $Settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 1)
 $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Limited
 
@@ -32,7 +32,7 @@ Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Se
 
 Write-Host "[OK] Scheduled Task '$TaskName' created successfully!" -ForegroundColor Green
 Write-Host ""
-Write-Host "Schedule: Monday–Friday at 07:00 (HK Time)" -ForegroundColor Cyan
+Write-Host "Schedule: Daily at 07:00 (HK Time)" -ForegroundColor Cyan
 Write-Host "Script:   $ScriptPath" -ForegroundColor Cyan
 Write-Host "Python:   $PythonPath" -ForegroundColor Cyan
 Write-Host ""

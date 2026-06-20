@@ -1,6 +1,6 @@
 ﻿# Morning Briefing — 晨间简报系统
 
-一个 Bloomberg 风格的专业金融晨间简报自动化系统，每个工作日自动生成并通过邮件发送。
+一个 Bloomberg 风格的专业金融晨间简报自动化系统，每天自动生成并通过邮件发送。
 
 ## 系统架构
 
@@ -34,7 +34,7 @@ morning_briefing/
 
 ```powershell
 $Action = New-ScheduledTaskAction -Execute "C:\Users\ZhuanZ\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -Argument "`"C:\Users\ZhuanZ\Documents\Codex\2026-06-19\new-chat-2\outputs\morning_briefing\morning_briefing.py`"" -WorkingDirectory "C:\Users\ZhuanZ\Documents\Codex\2026-06-19\new-chat-2\outputs\morning_briefing"
-$Trigger = New-ScheduledTaskTrigger -Weekly -WeeksInterval 1 -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At "07:00"
+$Trigger = New-ScheduledTaskTrigger -Daily -At "07:00"
 $Settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 1)
 $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Limited
 Register-ScheduledTask -TaskName "MorningFinancialBriefing" -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force
