@@ -27,6 +27,7 @@ RSS_CANDIDATE_LIMIT = 50
 NEWSAPI_CANDIDATE_LIMIT = 20
 GNEWS_CANDIDATE_LIMIT = 20
 NEWS_CANDIDATE_LIMIT = RSS_CANDIDATE_LIMIT + NEWSAPI_CANDIDATE_LIMIT + GNEWS_CANDIDATE_LIMIT
+DEFAULT_RECENT_NEWS_DAYS = 7
 
 def load_config():
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
@@ -53,6 +54,49 @@ def resolve_recipients(email_cfg):
         return config_recipients
 
     return split_email_list(email_cfg.get('recipient_email', ''))
+
+def get_recent_news_days(config):
+    try:
+        return max(1, int(config.get('briefing', {}).get('recent_news_days', DEFAULT_RECENT_NEWS_DAYS)))
+    except (TypeError, ValueError):
+        return DEFAULT_RECENT_NEWS_DAYS
+
+def parse_news_datetime(pub_date):
+    if not pub_date:
+        return None
+    value = str(pub_date).strip()
+    if not value:
+        return None
+    try:
+        import email.utils as eut
+        parsed = eut.parsedate_to_datetime(value)
+        if parsed:
+            return parsed
+    except Exception:
+        pass
+    try:
+        normalized = value.replace('Z', '+00:00')
+        return datetime.datetime.fromisoformat(normalized)
+    except Exception:
+        return None
+
+def is_recent_news(pub_date, max_age_days=DEFAULT_RECENT_NEWS_DAYS, now=None):
+    parsed = parse_news_datetime(pub_date)
+    if not parsed:
+        return False
+    if parsed.tzinfo:
+        current = now.astimezone(parsed.tzinfo) if now and now.tzinfo else datetime.datetime.now(parsed.tzinfo)
+    else:
+        current = now.replace(tzinfo=None) if now else datetime.datetime.now()
+    age_seconds = (current - parsed).total_seconds()
+    return -86400 <= age_seconds <= max_age_days * 86400
+
+def recent_from_date(config, now=None):
+    current = now or datetime.datetime.now(datetime.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=datetime.timezone.utc)
+    start = current.astimezone(datetime.timezone.utc) - datetime.timedelta(days=get_recent_news_days(config))
+    return start.date().isoformat()
 
 def fetch_rss(url, timeout=15):
     """Fetch and parse an RSS feed, returning list of (title, link, description, pub_date)."""
@@ -100,7 +144,7 @@ def normalize_candidate(title, link, description, pub_date, source_name, market_
         'analysis': analysis,
     }
 
-def fetch_newsapi_articles(config, market_data):
+def fetch_newsapi_articles(config, market_data, now=None):
     cfg = config.get('briefing', {}).get('newsapi', {})
     api_key = os.environ.get('NEWSAPI_KEY') or cfg.get('api_key', '')
     if not api_key:
@@ -110,6 +154,7 @@ def fetch_newsapi_articles(config, market_data):
         'pageSize': str(NEWSAPI_CANDIDATE_LIMIT),
         'sortBy': 'publishedAt',
         'language': cfg.get('language', 'en'),
+        'from': recent_from_date(config, now=now),
     }
     if cfg.get('country'):
         params['country'] = cfg['country']
@@ -138,7 +183,7 @@ def fetch_newsapi_articles(config, market_data):
         print(f'  [WARN] NewsAPI fetch failed: {e}', file=sys.stderr)
         return []
 
-def fetch_gnews_articles(config, market_data):
+def fetch_gnews_articles(config, market_data, now=None):
     cfg = config.get('briefing', {}).get('gnews', {})
     api_key = os.environ.get('GNEWS_KEY') or cfg.get('api_key', '')
     if not api_key:
@@ -148,6 +193,7 @@ def fetch_gnews_articles(config, market_data):
         'max': str(GNEWS_CANDIDATE_LIMIT),
         'sortby': 'publishedAt',
         'lang': cfg.get('language', 'en'),
+        'from': recent_from_date(config, now=now) + 'T00:00:00Z',
     }
     if cfg.get('country'):
         params['country'] = cfg['country']
@@ -259,15 +305,20 @@ def score_news_item(title, desc, link, pub_date, source_weights, keyword_scores)
         pass
     return score
 
-def collect_news(config, market_data):
+def collect_news(config, market_data, now=None):
     print('  Fetching financial news...', file=sys.stderr)
     all_items = []
     seen_links = set()
+    skipped_stale = 0
+    max_age_days = get_recent_news_days(config)
     sw = config['briefing'].get('source_weights', {})
     ks = config['briefing'].get('keyword_scores', {})
     for url in config['briefing'].get('news_sources', []):
         items = fetch_rss(url)
         for title, link, desc, pub in items:
+            if not is_recent_news(pub, max_age_days=max_age_days, now=now):
+                skipped_stale += 1
+                continue
             if link and link not in seen_links:
                 seen_links.add(link)
                 clean_desc = re.sub(r'<[^>]+>', '', desc)
@@ -282,13 +333,19 @@ def collect_news(config, market_data):
                     'analysis': analysis,
                     'score': score
                 })
-    for item in fetch_newsapi_articles(config, market_data):
+    for item in fetch_newsapi_articles(config, market_data, now=now):
+        if not is_recent_news(item.get('pub_date', ''), max_age_days=max_age_days, now=now):
+            skipped_stale += 1
+            continue
         marker = item.get('link') or item.get('title')
         if marker and marker not in seen_links:
             seen_links.add(marker)
             item['score'] = max(item.get('score', 0), score_news_item(item['title'], item['description'], item.get('link', ''), item.get('pub_date', ''), sw, ks))
             all_items.append(item)
-    for item in fetch_gnews_articles(config, market_data):
+    for item in fetch_gnews_articles(config, market_data, now=now):
+        if not is_recent_news(item.get('pub_date', ''), max_age_days=max_age_days, now=now):
+            skipped_stale += 1
+            continue
         marker = item.get('link') or item.get('title')
         if marker and marker not in seen_links:
             seen_links.add(marker)
@@ -296,6 +353,8 @@ def collect_news(config, market_data):
             all_items.append(item)
 
     all_items.sort(key=lambda x: (-x.get('score', 0), x.get('pub_date', '')))
+    if skipped_stale:
+        print(f'  Skipped {skipped_stale} stale/undated news item(s).', file=sys.stderr)
     print(f'  Scored {len(all_items)} items, selecting top {NEWS_CANDIDATE_LIMIT}', file=sys.stderr)
     for i, item in enumerate(all_items[:NEWS_CANDIDATE_LIMIT]):
         msg = '    #' + str(i+1) + ': [' + str(item['score']) + 'pts] ' + item['title'][:60] + '...'

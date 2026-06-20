@@ -203,6 +203,7 @@ class MorningBriefingStructureTests(unittest.TestCase):
         config = {
             "briefing": {
                 "news_sources": ["rss-1"],
+                "recent_news_days": 7,
                 "newsapi": {"enabled": True},
                 "gnews": {"enabled": True},
             }
@@ -212,24 +213,26 @@ class MorningBriefingStructureTests(unittest.TestCase):
         newsapi_items = [{
             "title": "API one",
             "description": "desc",
-            "url": "https://example.com/api-1",
-            "publishedAt": "2026-06-18T00:00:00Z",
-            "source": {"name": "Source A"},
+            "link": "https://example.com/api-1",
+            "pub_date": "2026-06-18T00:00:00Z",
+            "source": "Source A",
+            "analysis": "Analysis",
         }]
         gnews_items = [{
             "title": "GNews one",
             "description": "desc",
-            "url": "https://example.com/gnews-1",
-            "publishedAt": "2026-06-18T00:00:00Z",
-            "source": {"name": "Source B"},
+            "link": "https://example.com/gnews-1",
+            "pub_date": "2026-06-18T00:00:00Z",
+            "source": "Source B",
+            "analysis": "Analysis",
         }]
 
         old_fetch_rss = mb.fetch_rss
         old_fetch_newsapi = getattr(mb, "fetch_newsapi_articles", None)
         old_fetch_gnews = getattr(mb, "fetch_gnews_articles", None)
         mb.fetch_rss = lambda url, timeout=15: rss_items
-        mb.fetch_newsapi_articles = lambda config, market_data: newsapi_items
-        mb.fetch_gnews_articles = lambda config, market_data: gnews_items
+        mb.fetch_newsapi_articles = lambda config, market_data, now=None: newsapi_items
+        mb.fetch_gnews_articles = lambda config, market_data, now=None: gnews_items
         try:
             combined = mb.collect_news(config, self.sample_market_data())
         finally:
@@ -243,6 +246,94 @@ class MorningBriefingStructureTests(unittest.TestCase):
         self.assertIn("RSS one", titles)
         self.assertIn("API one", titles)
         self.assertIn("GNews one", titles)
+
+    def test_collect_news_filters_out_stale_rss_and_api_items(self):
+        config = {
+            "briefing": {
+                "news_sources": ["rss-1"],
+                "recent_news_days": 7,
+                "newsapi": {"enabled": True},
+                "gnews": {"enabled": True},
+            }
+        }
+        now = mb.datetime.datetime(2026, 6, 21, 7, 0, tzinfo=mb.datetime.timezone.utc)
+        rss_items = [
+            ("Fresh RSS", "https://example.com/fresh-rss", "desc", "Sat, 20 Jun 2026 08:00:00 GMT"),
+            ("Old RSS", "https://example.com/old-rss", "desc", "Wed, 18 Jun 2025 08:00:00 GMT"),
+        ]
+        newsapi_items = [
+            {
+                "title": "Fresh API",
+                "description": "desc",
+                "link": "https://example.com/fresh-api",
+                "pub_date": "2026-06-20T08:00:00Z",
+                "source": "NewsAPI",
+                "analysis": "Analysis",
+            },
+            {
+                "title": "Old API",
+                "description": "desc",
+                "link": "https://example.com/old-api",
+                "pub_date": "2025-06-18T08:00:00Z",
+                "source": "NewsAPI",
+                "analysis": "Analysis",
+            },
+        ]
+
+        old_fetch_rss = mb.fetch_rss
+        old_fetch_newsapi = getattr(mb, "fetch_newsapi_articles", None)
+        old_fetch_gnews = getattr(mb, "fetch_gnews_articles", None)
+        mb.fetch_rss = lambda url, timeout=15: rss_items
+        mb.fetch_newsapi_articles = lambda config, market_data, now=None: list(newsapi_items)
+        mb.fetch_gnews_articles = lambda config, market_data, now=None: []
+        try:
+            combined = mb.collect_news(config, self.sample_market_data(), now=now)
+        finally:
+            mb.fetch_rss = old_fetch_rss
+            if old_fetch_newsapi is not None:
+                mb.fetch_newsapi_articles = old_fetch_newsapi
+            if old_fetch_gnews is not None:
+                mb.fetch_gnews_articles = old_fetch_gnews
+
+        titles = [item["title"] for item in combined]
+        self.assertIn("Fresh RSS", titles)
+        self.assertIn("Fresh API", titles)
+        self.assertNotIn("Old RSS", titles)
+        self.assertNotIn("Old API", titles)
+
+    def test_newsapi_request_includes_recent_from_date(self):
+        captured = {}
+        config = {
+            "briefing": {
+                "recent_news_days": 7,
+                "newsapi": {"api_key": "test-key", "language": "en", "q": "markets"},
+            }
+        }
+        now = mb.datetime.datetime(2026, 6, 21, 7, 0, tzinfo=mb.datetime.timezone.utc)
+
+        def fake_urlopen(req, timeout):
+            captured["url"] = req.full_url
+
+            class Response:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def read(self):
+                    return b'{"articles":[]}'
+
+            return Response()
+
+        old_urlopen = mb.urllib.request.urlopen
+        mb.urllib.request.urlopen = fake_urlopen
+        try:
+            mb.fetch_newsapi_articles(config, self.sample_market_data(), now=now)
+        finally:
+            mb.urllib.request.urlopen = old_urlopen
+
+        self.assertIn("from=2026-06-14", captured["url"])
 
     def test_ai_sector_items_sorted_by_importance_and_capped_at_ten(self):
         items = [

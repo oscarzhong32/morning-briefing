@@ -59,10 +59,12 @@ person1@example.com,person2@example.com,colleague@example.com
 - `timezone` - usually `Asia/Hong_Kong`
 - `delivery_time` - daily send time
 - `weekdays_only` - set `false` if you want 7-day delivery
+- `recent_news_days` - maximum news age in days, default `7`; stale or undated items are excluded
 
 ### News sources
 
 RSS sources are listed under `briefing.news_sources`. You can add or remove feeds there.
+NewsAPI and GNews requests also receive a recent `from` date so API candidates stay close to the briefing date.
 
 ### AI and news API keys
 
