@@ -26,6 +26,7 @@ jobs:
     - name: Run Morning Briefing
       env:
         BRIEFING_EMAIL_PASSWORD: ${{ secrets.BRIEFING_EMAIL_PASSWORD }}
+        BRIEFING_RECIPIENT_EMAILS: ${{ secrets.BRIEFING_RECIPIENT_EMAILS }}
         AGNES_API_KEY: ${{ secrets.AGNES_API_KEY }}
         NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
         GNEWS_KEY: ${{ secrets.GNEWS_KEY }}

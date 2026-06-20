@@ -328,6 +328,44 @@ class MorningBriefingStructureTests(unittest.TestCase):
         self.assertIn('bgcolor="#0a0a0a"', html)
         self.assertIn('style="background-color:#0a0a0a;', html)
 
+    def test_recipients_env_secret_overrides_config_and_splits_lists(self):
+        old_value = mb.os.environ.get("BRIEFING_RECIPIENT_EMAILS")
+        mb.os.environ["BRIEFING_RECIPIENT_EMAILS"] = "one@example.com, two@example.com;three@example.com"
+        try:
+            recipients = mb.resolve_recipients({
+                "recipient_email": "old@example.com",
+                "recipient_emails": ["config@example.com"],
+            })
+        finally:
+            if old_value is None:
+                mb.os.environ.pop("BRIEFING_RECIPIENT_EMAILS", None)
+            else:
+                mb.os.environ["BRIEFING_RECIPIENT_EMAILS"] = old_value
+
+        self.assertEqual(
+            recipients,
+            ["one@example.com", "two@example.com", "three@example.com"],
+        )
+
+    def test_recipients_fall_back_to_config_list_then_legacy_single_value(self):
+        old_value = mb.os.environ.get("BRIEFING_RECIPIENT_EMAILS")
+        mb.os.environ.pop("BRIEFING_RECIPIENT_EMAILS", None)
+        try:
+            self.assertEqual(
+                mb.resolve_recipients({
+                    "recipient_email": "old@example.com",
+                    "recipient_emails": [" first@example.com ", "", "second@example.com"],
+                }),
+                ["first@example.com", "second@example.com"],
+            )
+            self.assertEqual(
+                mb.resolve_recipients({"recipient_email": "legacy@example.com"}),
+                ["legacy@example.com"],
+            )
+        finally:
+            if old_value is not None:
+                mb.os.environ["BRIEFING_RECIPIENT_EMAILS"] = old_value
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,6 +47,13 @@ Start by copying `config.example.json` to `config.json`, then fill in the values
 - `recipient_emails` - list of recipients
 - `use_tls` - usually `true`
 
+For GitHub Actions, set recipients with the repository secret `BRIEFING_RECIPIENT_EMAILS`.
+It overrides `config.json` and accepts comma or semicolon separated emails, for example:
+
+```text
+person1@example.com,person2@example.com,colleague@example.com
+```
+
 ### Briefing settings
 
 - `timezone` - usually `Asia/Hong_Kong`
@@ -65,6 +72,7 @@ These are read from environment variables first:
 - `NEWSAPI_KEY`
 - `GNEWS_KEY`
 - `BRIEFING_EMAIL_PASSWORD`
+- `BRIEFING_RECIPIENT_EMAILS`
 
 You can also put the keys in `config.json`, but environment variables are recommended.
 
@@ -135,6 +143,7 @@ Run `setup_task.ps1` as Administrator.
 The workflow runs daily and expects these secrets:
 
 - `BRIEFING_EMAIL_PASSWORD`
+- `BRIEFING_RECIPIENT_EMAILS`
 - `AGNES_API_KEY`
 - `NEWSAPI_KEY`
 - `GNEWS_KEY`

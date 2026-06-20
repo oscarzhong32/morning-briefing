@@ -32,6 +32,28 @@ def load_config():
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         return json.load(f)
 
+def split_email_list(value):
+    if not value:
+        return []
+    if isinstance(value, str):
+        candidates = re.split(r'[;,]', value)
+    else:
+        candidates = []
+        for item in value:
+            candidates.extend(re.split(r'[;,]', str(item)))
+    return [email.strip() for email in candidates if email and email.strip()]
+
+def resolve_recipients(email_cfg):
+    env_recipients = split_email_list(os.environ.get('BRIEFING_RECIPIENT_EMAILS', ''))
+    if env_recipients:
+        return env_recipients
+
+    config_recipients = split_email_list(email_cfg.get('recipient_emails', []))
+    if config_recipients:
+        return config_recipients
+
+    return split_email_list(email_cfg.get('recipient_email', ''))
+
 def fetch_rss(url, timeout=15):
     """Fetch and parse an RSS feed, returning list of (title, link, description, pub_date)."""
     items = []
@@ -1136,7 +1158,10 @@ def send_email(config, html_content, text_content):
     if not password:
         print("  [ERROR] No email password configured.", file=sys.stderr)
         return False
-    recipients = email_cfg.get('recipient_emails', [email_cfg.get('recipient_email', '')])
+    recipients = resolve_recipients(email_cfg)
+    if not recipients:
+        print("  [ERROR] No email recipients configured.", file=sys.stderr)
+        return False
     msg = MIMEMultipart('alternative')
     msg['Subject'] = f"晨间简报 - {datetime.date.today().strftime('%A, %B %d, %Y')}"
     msg['From'] = email_cfg['sender_email']
