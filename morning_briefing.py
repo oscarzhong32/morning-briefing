@@ -265,9 +265,52 @@ def collect_market_data(config):
             time.sleep(0.3)  # Rate limiting
     return data
 
-def score_news_item(title, desc, link, pub_date, source_weights, keyword_scores):
+def extract_article_body(html_text):
+    if not html_text:
+        return ''
+    text = re.sub(r'(?is)<(script|style|noscript).*?>.*?</\1>', ' ', html_text)
+    paragraphs = re.findall(r'(?is)<p[^>]*>(.*?)</p>', text)
+    if paragraphs:
+        text = ' '.join(paragraphs)
+    else:
+        text = re.sub(r'(?is)<[^>]+>', ' ', text)
+    text = htmlmod.unescape(text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def fetch_article_body(url, timeout=12):
+    if not url:
+        return ''
+    try:
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            content_type = (resp.headers.get('Content-Type') or '').lower()
+            raw = resp.read()
+        if 'text/html' not in content_type and b'<html' not in raw[:500].lower():
+            return ''
+        html_text = raw.decode('utf-8', errors='ignore')
+        body = extract_article_body(html_text)
+        return truncate_text(body, 1200)
+    except Exception as e:
+        print(f'  [WARN] Article body fetch failed for {url}: {e}', file=sys.stderr)
+        return ''
+
+def enrich_news_with_bodies(news_items, market_data, limit=50):
+    enriched = []
+    for idx, item in enumerate(news_items):
+        enriched_item = dict(item)
+        if idx < limit:
+            body = fetch_article_body(item.get('link', ''))
+            if body:
+                enriched_item['body'] = body
+        enriched.append(enriched_item)
+    return enriched
+
+def score_news_item(title, desc, link, pub_date, source_weights, keyword_scores, extra_text=''):
     """Score a news item by keywords, source authority, and time decay."""
-    text = (title + ' ' + desc).lower()
+    text = (title + ' ' + desc + ' ' + extra_text).lower()
     score = 0
     fire = ['fed', 'federal reserve', 'interest rate decision', 'rate cut', 'rate hike',
             'inflation', 'cpi', 'ppi', 'nonfarm payroll', 'jobs report', 'gdp',
@@ -346,7 +389,6 @@ def collect_news(config, market_data, now=None):
         marker = item.get('link') or item.get('title')
         if marker and marker not in seen_links:
             seen_links.add(marker)
-            item['score'] = max(item.get('score', 0), score_news_item(item['title'], item['description'], item.get('link', ''), item.get('pub_date', ''), sw, ks))
             all_items.append(item)
     for item in fetch_gnews_articles(config, market_data, now=now):
         if not is_recent_news(item.get('pub_date', ''), max_age_days=max_age_days, now=now):
@@ -355,10 +397,38 @@ def collect_news(config, market_data, now=None):
         marker = item.get('link') or item.get('title')
         if marker and marker not in seen_links:
             seen_links.add(marker)
-            item['score'] = max(item.get('score', 0), score_news_item(item['title'], item['description'], item.get('link', ''), item.get('pub_date', ''), sw, ks))
             all_items.append(item)
 
+    for item in all_items:
+        item['score'] = score_news_item(
+            item.get('title', ''),
+            item.get('description', ''),
+            item.get('link', ''),
+            item.get('pub_date', ''),
+            sw,
+            ks,
+        )
+
     all_items.sort(key=lambda x: (-x.get('score', 0), x.get('pub_date', '')))
+    selected_items = enrich_news_with_bodies(all_items[:NEWS_CANDIDATE_LIMIT], market_data, limit=50)
+    for item in selected_items:
+        body = item.get('body', '')
+        if body:
+            item['score'] = max(
+                item.get('score', 0),
+                score_news_item(
+                    item.get('title', ''),
+                    item.get('description', ''),
+                    item.get('link', ''),
+                    item.get('pub_date', ''),
+                    sw,
+                    ks,
+                    extra_text=body,
+                ),
+            )
+            item['analysis'] = generate_analysis(item.get('title', ''), item.get('description', '') + ' ' + body, market_data)
+
+    all_items = sorted(selected_items, key=lambda x: (-x.get('score', 0), x.get('pub_date', '')))
     if skipped_stale:
         print(f'  Skipped {skipped_stale} stale/undated news item(s).', file=sys.stderr)
     print(f'  Scored {len(all_items)} items, selecting top {NEWS_CANDIDATE_LIMIT}', file=sys.stderr)

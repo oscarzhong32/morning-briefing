@@ -335,6 +335,84 @@ class MorningBriefingStructureTests(unittest.TestCase):
 
         self.assertIn("from=2026-06-14", captured["url"])
 
+    def test_enrich_news_with_bodies_fetches_only_first_fifty_items(self):
+        calls = []
+        news = [
+            {
+                "title": f"Item {i}",
+                "description": "Generic update",
+                "link": f"https://example.com/{i}",
+                "pub_date": "2026-06-20T08:00:00Z",
+                "score": i,
+                "analysis": "Analysis",
+            }
+            for i in range(55)
+        ]
+
+        old_fetch = getattr(mb, "fetch_article_body", None)
+        mb.fetch_article_body = lambda url, timeout=12: calls.append(url) or f"BODY for {url}"
+        try:
+            enriched = mb.enrich_news_with_bodies(news, self.sample_market_data(), limit=50)
+        finally:
+            if old_fetch is None:
+                delattr(mb, "fetch_article_body")
+            else:
+                mb.fetch_article_body = old_fetch
+
+        self.assertEqual(len(calls), 50)
+        self.assertEqual(enriched[0]["body"], "BODY for https://example.com/0")
+        self.assertEqual(enriched[49]["body"], "BODY for https://example.com/49")
+        self.assertFalse(enriched[50].get("body"))
+
+    def test_body_text_boosts_score_for_financial_keywords(self):
+        base = mb.score_news_item(
+            "Market update",
+            "Brief description",
+            "https://example.com/x",
+            "2026-06-20T08:00:00Z",
+            {},
+            {},
+        )
+        boosted = mb.score_news_item(
+            "Market update",
+            "Brief description",
+            "https://example.com/x",
+            "2026-06-20T08:00:00Z",
+            {},
+            {},
+            extra_text="Federal Reserve flags inflation and rate risks",
+        )
+        self.assertGreater(boosted, base)
+
+    def test_collect_news_reweights_selected_items_using_body_text(self):
+        config = {
+            "briefing": {
+                "news_sources": ["rss-1"],
+                "recent_news_days": 7,
+            }
+        }
+
+        rss_items = [
+            ("Plain update", "https://example.com/plain", "desc", "Sat, 20 Jun 2026 08:00:00 GMT"),
+            ("Policy headline", "https://example.com/policy", "desc", "Sat, 20 Jun 2026 08:00:00 GMT"),
+        ]
+
+        old_fetch_rss = mb.fetch_rss
+        old_fetch_body = getattr(mb, "fetch_article_body", None)
+        mb.fetch_rss = lambda url, timeout=15: rss_items
+        mb.fetch_article_body = lambda url, timeout=12: "Federal Reserve inflation rate risk" if "policy" in url else "Generic body"
+        try:
+            combined = mb.collect_news(config, self.sample_market_data())
+        finally:
+            mb.fetch_rss = old_fetch_rss
+            if old_fetch_body is None:
+                delattr(mb, "fetch_article_body")
+            else:
+                mb.fetch_article_body = old_fetch_body
+
+        titles = [item["title"] for item in combined]
+        self.assertEqual(titles[0], "Policy headline")
+
     def test_ai_sector_items_sorted_by_importance_and_capped_at_ten(self):
         items = [
             {"title": f"Item {i}", "importance": i, "score": i}
